@@ -51,7 +51,8 @@ YDL_OPTIONS = {
     'format': 'bestaudio/best',
     'noplaylist': False,
     'quiet': True,
-    'extract_flat': 'in_playlist'
+    'extract_flat': 'in_playlist',
+    'cookiefile': 'cookies.txt'
 }
 
 FFMPEG_OPTIONS = {

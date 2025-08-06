@@ -1,6 +1,7 @@
 # Discord Music Bot
 
-A Python Discord music bot with YouTube and Spotify support.
+A Python Discord music bot with YouTube support.
+Will not work with Spotify right now
 
 ## Features
 - Play music from YouTube
