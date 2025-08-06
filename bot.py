@@ -250,37 +250,6 @@ async def shutdown(interaction: discord.Interaction):
     await bot.close()
 
 
-
-
-
-# @tree.command(name="setstatus", description="Change the bot's status (Admin only)")
-# @app_commands.describe(
-#     type="Type of status: playing, listening, watching",
-#     message="The custom status message"
-# )
-# async def setstatus(interaction: discord.Interaction, type: str, message: str):
-#     allowed_users = [123456789012345678]  # Replace with your Discord user ID
-
-#     if interaction.user.id not in allowed_users:
-#         await interaction.response.send_message("❌ You are not allowed to change my status.", ephemeral=True)
-#         return
-
-#     status_type = type.lower()
-
-#     if status_type == "playing":
-#         activity = discord.Game(name=message)
-#     elif status_type == "listening":
-#         activity = discord.Activity(type=discord.ActivityType.listening, name=message)
-#     elif status_type == "watching":
-#         activity = discord.Activity(type=discord.ActivityType.watching, name=message)
-#     else:
-#         await interaction.response.send_message("❌ Invalid type. Use: playing, listening, watching.", ephemeral=True)
-#         return
-
-#     await bot.change_presence(activity=activity)
-#     await interaction.response.send_message(f"✅ Status changed to: **{status_type.title()} {message}**")
-
-
 @tree.command(name="bassboost", description="Set bass boost level (1–100, or 0 to disable)")
 @app_commands.describe(level="Bass boost level: 0 to 100")
 async def bassboost(interaction: discord.Interaction, level: int):
