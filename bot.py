@@ -99,7 +99,7 @@ async def play_next(voice_client, guild_id, interaction):
 
     url, title, duration = queue.popleft()
 
-    with yt_dlp.YoutubeDL({'format': 'bestaudio'}) as ydl:
+    with yt_dlp.YoutubeDL({'format': 'bestaudio', 'cookiefile': 'cookies.txt'}) as ydl:
         info = ydl.extract_info(url, download=False)
         audio_url = info['url']
 
