@@ -13,7 +13,7 @@ Will not work with Spotify right now
 
 ## Installation
 1. Clone this repository
-2. Create a `.env` file and add your `DISCORD_TOKEN`
+2. Create a `.env` file and add your `DISCORD_TOKEN=`
 3. Install requirements:
    ```bash
    pip install -r requirements.txt
