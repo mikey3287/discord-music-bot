@@ -12,7 +12,7 @@ from config import ALLOWED_USERS
 
 
 # Replace this path if different on your Mac
-discord.opus.load_opus('/opt/homebrew/opt/opus/lib/libopus.dylib')
+discord.opus.load_opus('libopus.so.0')
 
 
 load_dotenv()
