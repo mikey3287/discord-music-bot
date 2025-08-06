@@ -9,10 +9,29 @@ from collections import deque
 import discord.opus
 from datetime import timedelta
 from config import ALLOWED_USERS
+import discord
+import platform
 
 
 # Replace this path if different on your Mac
-discord.opus.load_opus('libopus.so.0')
+if not discord.opus.is_loaded():
+    system = platform.system()
+    if system == "Darwin":  # macOS
+        possible_paths = [
+            "/opt/homebrew/opt/opus/lib/libopus.dylib",  # Apple Silicon / M1/M2
+            "/usr/local/opt/opus/lib/libopus.dylib"      # Intel Macs
+        ]
+        for path in possible_paths:
+            if os.path.exists(path):
+                discord.opus.load_opus(path)
+                break
+        else:
+            raise OSError("Opus library not found on macOS. Try running: brew install opus")
+    elif system == "Linux":  # Render or other Linux
+        discord.opus.load_opus('libopus.so.0')
+    else:
+        raise OSError(f"Unsupported OS: {system}")
+
 
 
 load_dotenv()
@@ -129,9 +148,9 @@ async def play_next(voice_client, guild_id, interaction):
 
 
 @tree.command(name="play", description="Play a song from YouTube")
-@app_commands.describe(query="YouTube URL or search term")
 async def play(interaction: discord.Interaction, query: str):
     await interaction.response.defer()
+    
     voice = interaction.user.voice
     if not voice or not voice.channel:
         return await interaction.followup.send("❌ You must be in a voice channel.")
@@ -142,16 +161,16 @@ async def play(interaction: discord.Interaction, query: str):
 
     queue = get_queue(interaction.guild_id)
     queue.extend(results)
+
     if not interaction.guild.voice_client:
         vc = await voice.channel.connect()
         await play_next(vc, interaction.guild_id, interaction)
 
-# Feedback for playlists or single songs
     if len(results) > 1:
         await interaction.followup.send(f"✅ Added **{len(results)} songs** from playlist to the queue.")
     else:
         await interaction.followup.send(f"✅ Added to queue: {results[0][1]}")
-        bot.now_playing_channels[interaction.guild_id] = interaction.channel_id
+
 
 
 
