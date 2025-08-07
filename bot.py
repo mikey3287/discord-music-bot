@@ -149,53 +149,37 @@ async def play_next(voice_client, guild_id, interaction):
 
 
 @tree.command(name="play", description="Play a song from YouTube")
+@app_commands.describe(query="YouTube URL or search term")
 async def play(interaction: discord.Interaction, query: str):
+    # Defer immediately to avoid timeout
     await interaction.response.defer()
-    
-    voice = interaction.user.voice
-    if not voice or not voice.channel:
-        return await interaction.followup.send("❌ You must be in a voice channel.")
 
-    results = await search_youtube(query)
-    if not results:
-        return await interaction.followup.send("❌ No results found.")
+    try:
+        voice = interaction.user.voice
+        if not voice or not voice.channel:
+            await interaction.followup.send("❌ You must be in a voice channel.")
+            return
 
-    queue = get_queue(interaction.guild_id)
-    queue.extend(results)
+        results = await search_youtube(query)
+        if not results:
+            await interaction.followup.send("❌ No results found.")
+            return
 
-    if not interaction.guild.voice_client:
-        vc = await voice.channel.connect()
-        await play_next(vc, interaction.guild_id, interaction)
+        queue = get_queue(interaction.guild_id)
+        queue.extend(results)
 
-    if len(results) > 1:
-        await interaction.followup.send(f"✅ Added **{len(results)} songs** from playlist to the queue.")
-    else:
-        await interaction.followup.send(f"✅ Added to queue: {results[0][1]}")
+        if not interaction.guild.voice_client:
+            vc = await voice.channel.connect()
+            await play_next(vc, interaction.guild_id, interaction)
 
+        if len(results) > 1:
+            await interaction.followup.send(f"✅ Added **{len(results)} songs** from playlist to the queue.")
+        else:
+            await interaction.followup.send(f"✅ Added to queue: {results[0][1]}")
 
+    except Exception as e:
+        await interaction.followup.send(f"❌ Error: {e}")
 
-
-@tree.command(name="skip", description="Skip the current song")
-async def skip(interaction: discord.Interaction):
-    vc = interaction.guild.voice_client
-    if vc and vc.is_playing():
-        await interaction.response.send_message("⏭️ Skipping song...")
-
-        # Pass this interaction into play_next after skip
-        def after_skip_play():
-            fut = asyncio.run_coroutine_threadsafe(
-                play_next(vc, interaction.guild_id, interaction),
-                bot.loop
-            )
-            try:
-                fut.result()
-            except Exception as e:
-                print(f"Next song error after skip: {e}")
-
-        vc.stop()  # This will trigger the previous after_play
-        after_skip_play()  # but we also force a new one to update now-playing
-    else:
-        await interaction.response.send_message("❌ Nothing is playing.")
 
 
 @tree.command(name="pause", description="Pause the music")
