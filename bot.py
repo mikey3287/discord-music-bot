@@ -39,7 +39,7 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 
 intents = discord.Intents.default()
 intents.message_content = True
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(command_prefix="/", intents=intents)
 tree = bot.tree
 bot.now_playing_messages = {}
 bot.now_playing_channels = {}
@@ -98,7 +98,7 @@ async def play_next(voice_client, guild_id, interaction):
 
     url, title, duration = queue.popleft()
 
-    with yt_dlp.YoutubeDL({'format': 'bestaudio', 'cookiefile': 'cookies.txt'}) as ydl:
+    with yt_dlp.YoutubeDL({'format': 'bestaudio'}) as ydl:
         info = ydl.extract_info(url, download=False)
         audio_url = info['url']
 
