@@ -52,7 +52,7 @@ YDL_OPTIONS = {
     'noplaylist': False,
     'quiet': True,
     'extract_flat': 'in_playlist',
-    'cookiefile': 'cookies.txt'
+    'cookiefile': 'cookies.txt'  # <== ADD THIS LINE
 }
 
 FFMPEG_OPTIONS = {
