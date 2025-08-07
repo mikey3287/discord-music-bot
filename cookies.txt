@@ -1,2 +1,0 @@
-.youtube.com	TRUE	/	FALSE	2147483647	SID	abcd1234yourrealcookie
-.youtube.com	TRUE	/	FALSE	2147483647	HSID	abcd5678yourrealcookie
