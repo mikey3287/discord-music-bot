@@ -150,10 +150,9 @@ async def play_next(voice_client, guild_id, interaction):
 @tree.command(name="play", description="Play a song from YouTube")
 @app_commands.describe(query="YouTube URL or search term")
 async def play(interaction: discord.Interaction, query: str):
-    # Defer immediately to avoid timeout
-    await interaction.response.defer()
-
     try:
+        await interaction.response.defer()  # Defer immediately
+
         voice = interaction.user.voice
         if not voice or not voice.channel:
             await interaction.followup.send("❌ You must be in a voice channel.")
@@ -177,7 +176,12 @@ async def play(interaction: discord.Interaction, query: str):
             await interaction.followup.send(f"✅ Added to queue: {results[0][1]}")
 
     except Exception as e:
-        await interaction.followup.send(f"❌ Error: {e}")
+        try:
+            # If not already deferred, try sending directly
+            await interaction.followup.send(f"❌ Error: {e}")
+        except discord.errors.InteractionResponded:
+            print("Interaction already responded. Error:", e)
+
 
 
 
