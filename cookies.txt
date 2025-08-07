@@ -1,4 +1,2 @@
-# Netscape HTTP Cookie File
-.youtube.com  TRUE  /  FALSE  2145916800  SID  your_sid_cookie_here
-.youtube.com  TRUE  /  FALSE  2145916800  HSID  your_hsid_cookie_here
-...
+.youtube.com	TRUE	/	FALSE	2147483647	SID	abcd1234yourrealcookie
+.youtube.com	TRUE	/	FALSE	2147483647	HSID	abcd5678yourrealcookie
