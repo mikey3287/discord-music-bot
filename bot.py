@@ -271,6 +271,22 @@ async def bassboost(interaction: discord.Interaction, level: int):
         await interaction.response.send_message(f"🎛️ Bass boost level set to **{level}**.")
 
 
+@tree.command(name="queue", description="Show the song queue")
+async def queue(interaction: discord.Interaction):
+    queue = get_queue(interaction.guild_id)
+    if not queue:
+        return await interaction.response.send_message("🎵 Queue is empty.")
+    message = "\n".join(f"{idx+1}. {title}" for idx, (_, title) in enumerate(queue))
+    await interaction.response.send_message(f"🎶 **Queue:**\n{message}")
+
+@tree.command(name="skip", description="Skip the current song")
+async def skip(interaction: discord.Interaction):
+    vc = interaction.guild.voice_client
+    if vc and vc.is_playing():
+        vc.stop()
+        await interaction.response.send_message("⏭️ Skipping song...")
+    else:
+        await interaction.response.send_message("❌ Nothing is playing.")    
 
 @bot.event
 async def on_ready():
