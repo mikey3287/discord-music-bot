@@ -11,6 +11,11 @@ from datetime import timedelta
 from config import ALLOWED_USERS
 import discord
 import platform
+import imageio_ffmpeg as ffmpeg
+import os
+
+os.environ["FFMPEG_BINARY"] = ffmpeg.get_ffmpeg_exe()
+
 
 
 # Replace this path if different on your Mac
@@ -108,8 +113,8 @@ async def play_next(voice_client, guild_id, interaction):
     options = '-vn'
     if bassboost_level > 0:
         # Cap level to avoid distortion
-        gain = min(bassboost_level, 100)
-        options += f' -af "bass=g={gain},dynaudnorm=f=200"'
+        gain = min(bassboost_level, 5)
+        options += f' -af "bass=g={gain},volume=1"'
 
 
     ffmpeg_opts = {
@@ -257,11 +262,11 @@ async def shutdown(interaction: discord.Interaction):
     await bot.close()
 
 
-@tree.command(name="bassboost", description="Set bass boost level (1–100, or 0 to disable)")
-@app_commands.describe(level="Bass boost level: 0 to 100")
+@tree.command(name="bassboost", description="Set bass boost level ( 5, or 0 to disable)")
+@app_commands.describe(level="Bass boost level: 0 to 5")
 async def bassboost(interaction: discord.Interaction, level: int):
-    if not 0 <= level <= 100:
-        await interaction.response.send_message("❌ Please enter a level between 0 and 100.", ephemeral=True)
+    if not 0 <= level <= 5:
+        await interaction.response.send_message("❌ Please enter a level between 0 and 5.", ephemeral=True)
         return
 
     BASSBOOST_LEVELS[interaction.guild_id] = level
@@ -271,13 +276,21 @@ async def bassboost(interaction: discord.Interaction, level: int):
         await interaction.response.send_message(f"🎛️ Bass boost level set to **{level}**.")
 
 
-@tree.command(name="queue", description="Show the song queue")
+@bot.tree.command(name="queue", description="Show the current music queue")
 async def queue(interaction: discord.Interaction):
-    queue = get_queue(interaction.guild_id)
     if not queue:
-        return await interaction.response.send_message("🎵 Queue is empty.")
-    message = "\n".join(f"{idx+1}. {title}" for idx, (_, title) in enumerate(queue))
-    await interaction.response.send_message(f"🎶 **Queue:**\n{message}")
+        await interaction.response.send_message("The queue is currently empty.")
+        return
+
+    # Works if queue items are dictionaries
+    try:
+        message = "\n".join(f"{idx+1}. {item['title']}" for idx, item in enumerate(queue))
+    except TypeError:
+        # Fallback for old (url, title) tuple format
+        message = "\n".join(f"{idx+1}. {title}" for idx, (_, title) in enumerate(queue))
+
+    await interaction.response.send_message(f"**Current Queue:**\n{message}")
+
 
 @tree.command(name="skip", description="Skip the current song")
 async def skip(interaction: discord.Interaction):
