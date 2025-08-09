@@ -9,7 +9,7 @@ Will not work with Spotify right now
 - Pause, Resume, Skip
 - Bass boost
 - Slash commands
-- Works on Mac & Render 24/7
+- Works on Mac 
 
 ## Installation
 1. Clone this repository
