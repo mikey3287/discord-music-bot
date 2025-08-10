@@ -8,7 +8,6 @@ import asyncio
 from collections import deque
 import discord.opus
 from datetime import timedelta
-from config import ALLOWED_USERS
 import discord
 import platform
 import imageio_ffmpeg as ffmpeg
@@ -223,11 +222,11 @@ from datetime import timedelta
 
 @tree.command(name="reset", description="Reset the bot: stop music, clear queue, leave voice, and clear status")
 async def reset(interaction: discord.Interaction):
-    from config import ALLOWED_USERS
-    if interaction.user.id not in ALLOWED_USERS:
+    allowed_users = [351396116480393220, 690712359060111430]  # Replace with your actual Discord IDs
+
+    if interaction.user.id not in allowed_users:
         await interaction.response.send_message("❌ You are not allowed to reset the bot.")
         return
-    # ... rest of your reset logic ...
 
     await interaction.response.defer(thinking=False)  # Prevent timeout
 
@@ -251,16 +250,6 @@ async def reset(interaction: discord.Interaction):
         del bot.now_playing_messages[guild_id]
 
     await interaction.followup.send("🔄 Bot has been reset: stopped music, cleared queue, and left voice.")
-
-@bot.tree.command(name="shutdown", description="Shut down the bot (admin only)")
-async def shutdown(interaction: discord.Interaction):
-    from config import ALLOWED_USERS
-    if interaction.user.id not in ALLOWED_USERS:
-        await interaction.response.send_message("❌ You are not allowed to shut me down.")
-        return
-
-    await interaction.response.send_message("🛑 Bot is shutting down...")
-    await bot.close()
 
 
 @tree.command(name="bassboost", description="Set bass boost level ( 5, or 0 to disable)")
