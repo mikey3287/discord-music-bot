@@ -2,6 +2,7 @@ discord.py
 yt_dlp
 python-dotenv
 PyNaCl
+imagio-ffmpeg
 
 aiohappyeyeballs==2.6.1
 aiohttp==3.12.15

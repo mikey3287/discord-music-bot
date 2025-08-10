@@ -12,7 +12,6 @@ from config import ALLOWED_USERS
 import discord
 import platform
 import imageio_ffmpeg as ffmpeg
-import os
 
 os.environ["FFMPEG_BINARY"] = ffmpeg.get_ffmpeg_exe()
 
