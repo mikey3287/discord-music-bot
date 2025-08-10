@@ -38,8 +38,10 @@ if not discord.opus.is_loaded():
 
 
 
-load_dotenv()
-TOKEN = os.getenv("DISCORD_TOKEN")
+import dotenv
+dotenv.load_dotenv()
+TOKEN = os.getenv("TOKEN")
+
 
 intents = discord.Intents.default()
 intents.message_content = True
