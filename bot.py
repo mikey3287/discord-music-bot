@@ -64,6 +64,7 @@ FFMPEG_OPTIONS = {
 }
 
 SONG_QUEUES = {}
+CURRENT_PLAYERS = {}
 
 def get_queue(guild_id):
     return SONG_QUEUES.setdefault(guild_id, deque())
@@ -133,7 +134,8 @@ async def play_next(voice_client, guild_id, interaction):
     }
 
     source = discord.FFmpegPCMAudio(audio_url, **ffmpeg_opts)
-    player = discord.PCMVolumeTransformer(source)
+    player = discord.PCMVolumeTransformer(source, volume=0.5)
+    CURRENT_PLAYERS[guild_id] = player
 
     def after_play(err):
         if err:
@@ -167,9 +169,9 @@ async def play_next(voice_client, guild_id, interaction):
 @tree.command(name="play", description="Play a song from YouTube")
 @app_commands.describe(query="YouTube URL or search term")
 async def play(interaction: discord.Interaction, query: str):
-    try:
-        await interaction.response.defer()  # Defer immediately
+    await interaction.response.defer()
 
+    try:
         voice = interaction.user.voice
         if not voice or not voice.channel:
             await interaction.followup.send("❌ You must be in a voice channel.")
@@ -183,6 +185,9 @@ async def play(interaction: discord.Interaction, query: str):
         queue = get_queue(interaction.guild_id)
         queue.extend(results)
 
+        # ✅ Set channel for updates
+        bot.now_playing_channels[interaction.guild_id] = interaction.channel.id
+
         if not interaction.guild.voice_client:
             vc = await voice.channel.connect()
             await play_next(vc, interaction.guild_id, interaction)
@@ -193,11 +198,8 @@ async def play(interaction: discord.Interaction, query: str):
             await interaction.followup.send(f"✅ Added to queue: {results[0][1]}")
 
     except Exception as e:
-        try:
-            # If not already deferred, try sending directly
-            await interaction.followup.send(f"❌ Error: {e}")
-        except discord.errors.InteractionResponded:
-            print("Interaction already responded. Error:", e)
+        await interaction.followup.send(f"❌ Error: {e}")
+
 
 
 
@@ -312,6 +314,22 @@ async def skip(interaction: discord.Interaction):
         await interaction.response.send_message("⏭️ Skipping song...")
     else:
         await interaction.response.send_message("❌ Nothing is playing.")    
+
+@tree.command(name="volume", description="Set the playback volume (0-100%)")
+@app_commands.describe(level="Volume level from 0 to 100")
+async def volume(interaction: discord.Interaction, level: int):
+    if not 0 <= level <= 100:
+        await interaction.response.send_message("❌ Please enter a volume between 0 and 100.", ephemeral=True)
+        return
+
+    player = CURRENT_PLAYERS.get(interaction.guild_id)
+    if not player:
+        await interaction.response.send_message("❌ No music is currently playing.", ephemeral=True)
+        return
+
+    player.volume = level / 100  # convert percent to 0.0–1.0
+    await interaction.response.send_message(f"🔊 Volume set to **{level}%**.")
+       
 
 @bot.event
 async def on_ready():
