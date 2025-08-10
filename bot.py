@@ -68,19 +68,28 @@ SONG_QUEUES = {}
 def get_queue(guild_id):
     return SONG_QUEUES.setdefault(guild_id, deque())
 
+import asyncio
+
 async def search_youtube(query):
     if not query.startswith("http"):
         query = f"ytsearch:{query}"
 
     results = []
 
-    with yt_dlp.YoutubeDL({
+    ydl_opts = {
         'format': 'bestaudio/best',
         'quiet': True,
         'noplaylist': False,
         'extract_flat': True,
-    }) as ydl:
-        info = ydl.extract_info(query, download=False)
+    }
+
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        try:
+            info = ydl.extract_info(query, download=False)
+        except Exception as e:
+            print(f"yt-dlp extraction error: {e}, retrying...")
+            await asyncio.sleep(1)
+            info = ydl.extract_info(query, download=False)
 
         if 'entries' in info:
             entries = info['entries']
@@ -102,22 +111,24 @@ async def play_next(voice_client, guild_id, interaction):
 
     url, title, duration = queue.popleft()
 
-    with yt_dlp.YoutubeDL({'format': 'bestaudio'}) as ydl:
+    ydl_opts = {
+        'format': 'bestaudio[ext=m4a]/bestaudio/best',
+        'quiet': True,
+        'noplaylist': True
+    }
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
         audio_url = info['url']
 
-    # Apply bassboost if enabled for this guild
     bassboost_level = BASSBOOST_LEVELS.get(guild_id, 0)
 
     options = '-vn'
     if bassboost_level > 0:
-        # Cap level to avoid distortion
         gain = min(bassboost_level, 5)
         options += f' -af "bass=g={gain},volume=1"'
 
-
     ffmpeg_opts = {
-        'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5',
+        'before_options': '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -protocol_whitelist "file,http,https,tcp,tls,crypto"',
         'options': options
     }
 
@@ -134,6 +145,8 @@ async def play_next(voice_client, guild_id, interaction):
             print(f"Next song error: {e}")
 
     voice_client.play(player, after=after_play)
+
+    # Update now playing message (your existing code)
 
     # ✅ Update "Now Playing" message in last known channel
     channel_id = bot.now_playing_channels.get(guild_id)
