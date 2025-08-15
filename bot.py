@@ -365,10 +365,11 @@ async def debug(interaction: discord.Interaction):
         embed.add_field(name="Current Song", value="No song playing", inline=False)
 
     # Network check
+    import aiohttp
     try:
         async with aiohttp.ClientSession() as session:
             if q:
-                url = q[0]["url"]
+                url = q[0]['url']
                 async with session.head(url, timeout=5) as resp:
                     embed.add_field(name="Network Status", value=f"URL reachable: {resp.status}", inline=False)
             else:
