@@ -134,7 +134,7 @@ async def play_next(voice_client, guild_id, interaction):
     }
 
     source = discord.FFmpegPCMAudio(audio_url, **ffmpeg_opts)
-    player = discord.PCMVolumeTransformer(source, volume=0.5)
+    player = discord.PCMVolumeTransformer(source, volume=1)
     CURRENT_PLAYERS[guild_id] = player
 
     def after_play(err):
@@ -199,9 +199,6 @@ async def play(interaction: discord.Interaction, query: str):
 
     except Exception as e:
         await interaction.followup.send(f"❌ Error: {e}")
-
-
-
 
 
 @tree.command(name="pause", description="Pause the music")
@@ -276,18 +273,25 @@ async def shutdown(interaction: discord.Interaction):
     await bot.close()
 
 
-@tree.command(name="bassboost", description="Set bass boost level ( 5, or 0 to disable)")
+@tree.command(name="bassboost", description="Set bass boost level (0 to 5)")
 @app_commands.describe(level="Bass boost level: 0 to 5")
 async def bassboost(interaction: discord.Interaction, level: int):
     if not 0 <= level <= 5:
         await interaction.response.send_message("❌ Please enter a level between 0 and 5.", ephemeral=True)
         return
 
-    BASSBOOST_LEVELS[interaction.guild_id] = level
+    guild_id = interaction.guild_id
+    BASSBOOST_LEVELS[guild_id] = level
+
+    vc = interaction.guild.voice_client
+    if vc and vc.is_playing():
+        vc.stop()  # This triggers after_play, restarting playback with new bass boost
+
     if level == 0:
         await interaction.response.send_message("🎛️ Bass boost has been **disabled**.")
     else:
         await interaction.response.send_message(f"🎛️ Bass boost level set to **{level}**.")
+
 
 
 @bot.tree.command(name="queue", description="Show the current music queue")
@@ -315,6 +319,7 @@ async def skip(interaction: discord.Interaction):
     else:
         await interaction.response.send_message("❌ Nothing is playing.")    
 
+
 @tree.command(name="volume", description="Set the playback volume (0-100%)")
 @app_commands.describe(level="Volume level from 0 to 100")
 async def volume(interaction: discord.Interaction, level: int):
@@ -330,6 +335,44 @@ async def volume(interaction: discord.Interaction, level: int):
     player.volume = level / 100  # convert percent to 0.0–1.0
     await interaction.response.send_message(f"🔊 Volume set to **{level}%**.")
        
+@tree.command(name="debug", description="Check bot connection and network status")
+async def debug(interaction: discord.Interaction):
+    guild_id = interaction.guild_id
+    vc = interaction.guild.voice_client
+    queue = get_queue(guild_id)
+
+    embed = discord.Embed(title="🛠 Bot Debug Status", color=0x00ff00)
+
+    # Voice connection
+    if vc and vc.is_connected():
+        embed.add_field(name="Voice Status", value=f"Connected to: {vc.channel.name}", inline=False)
+        embed.add_field(name="Is Playing?", value=vc.is_playing(), inline=True)
+        embed.add_field(name="Is Paused?", value=vc.is_paused(), inline=True)
+    else:
+        embed.add_field(name="Voice Status", value="Not connected", inline=False)
+
+    # Current song
+    if vc and vc.is_playing() and queue:
+        current_url, current_title = queue[0]
+        embed.add_field(name="Current Song", value=f"{current_title}\n{current_url}", inline=False)
+    elif vc and vc.is_playing():
+        embed.add_field(name="Current Song", value="Unknown (playing directly)", inline=False)
+    else:
+        embed.add_field(name="Current Song", value="No song playing", inline=False)
+
+    # Network check
+    try:
+        async with aiohttp.ClientSession() as session:
+            if queue:
+                url = queue[0][0]
+                async with session.head(url, timeout=5) as resp:
+                    embed.add_field(name="Network Status", value=f"URL reachable: {resp.status}", inline=False)
+            else:
+                embed.add_field(name="Network Status", value="No URL to check", inline=False)
+    except Exception as e:
+        embed.add_field(name="Network Status", value=f"Error: {e}", inline=False)
+
+    await interaction.response.send_message(embed=embed)       
 
 @bot.event
 async def on_ready():
