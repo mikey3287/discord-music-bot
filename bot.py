@@ -365,6 +365,9 @@ async def shutdown(interaction: discord.Interaction):
     await interaction.response.send_message("🛑 Bot is shutting down...")
     await bot.close()
 
+# # # # # # #
+#   BASE    #
+# # # # # # #
 
 @tree.command(name="bassboost", description="Set bass boost level (0 to 5)")
 @app_commands.describe(level="Bass boost level: 0 to 5")
@@ -403,7 +406,9 @@ async def bassboost(interaction: discord.Interaction, level: int):
         await interaction.followup.send(f"🎛️ Bass boost set to **{level}** and reapplied to the **current song**.")
 
 
-
+# # # # # # #
+#   QUEUE   #
+# # # # # # #
 
 @bot.tree.command(name="queue", description="Show the current music queue")
 async def queue_cmd(interaction: discord.Interaction):
@@ -431,6 +436,10 @@ async def skip(interaction: discord.Interaction):
         await interaction.response.send_message("❌ Nothing is playing.")    
 
 
+#
+# VOLUME
+#
+
 @tree.command(name="volume", description="Set the playback volume (0-100%)")
 @app_commands.describe(level="Volume level from 0 to 100")
 async def volume(interaction: discord.Interaction, level: int):
@@ -447,10 +456,27 @@ async def volume(interaction: discord.Interaction, level: int):
     await interaction.response.send_message(f"🔊 Volume set to **{level}%**.")
        
 
+#
+# DEBUG
+#
+
 @tree.command(name="debug", description="Check bot status and connection")
 async def debug(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+
+    import time
     vc = interaction.guild.voice_client
-    q = get_queue(interaction.guild_id)
+    guild_id = interaction.guild_id
+    q = get_queue(guild_id)
+
+    def fmt_time(seconds: float) -> str:
+        try:
+            seconds = int(max(0, round(seconds)))
+            m, s = divmod(seconds, 60)
+            h, m = divmod(m, 60)
+            return f"{h:d}:{m:02d}:{s:02d}" if h else f"{m:d}:{s:02d}"
+        except Exception:
+            return "?:??"
 
     embed = discord.Embed(title="Bot Debug Info", color=discord.Color.blurple())
 
@@ -462,33 +488,62 @@ async def debug(interaction: discord.Interaction):
     else:
         embed.add_field(name="Voice Status", value="Not connected", inline=False)
 
-    # Current song
-    if vc and vc.is_playing() and q:
-        embed.add_field(
-            name="Current Song",
-            value=f"{q[0]['title']}\n{q[0]['url']}",
-            inline=False
-        )
-    elif vc and vc.is_playing():
-        embed.add_field(name="Current Song", value="Unknown (playing directly)", inline=False)
+    # Determine current song from CURRENT_TRACK (preferred), else fall back to queue head
+    track = CURRENT_TRACK.get(guild_id)
+    cur_title = None
+    cur_url = None
+    cur_elapsed = None
+    cur_total = None
+
+    if track:
+        cur_title = track.get("title") or None
+        cur_url = track.get("url") or None
+        started_at = track.get("started_at") or time.monotonic()
+        seek_offset = float(track.get("seek_offset", 0.0))
+        cur_elapsed = (time.monotonic() - started_at) + seek_offset
+        cur_total = track.get("duration") or 0
+    elif q:
+        # q items are tuples: (url, title, duration)
+        try:
+            cur_url, cur_title, cur_total = q[0][0], q[0][1], (q[0][2] if len(q[0]) > 2 else 0)
+        except Exception:
+            pass
+
+    # Current song field
+    if vc and (vc.is_playing() or vc.is_paused()) and (cur_title or cur_url):
+        elapsed_str = fmt_time(cur_elapsed) if cur_elapsed is not None else "?:??"
+        total_str = fmt_time(cur_total) if cur_total else "?:??"
+        details = f"{cur_title or 'Unknown title'}\n{cur_url or 'Unknown URL'}\n⏱ {elapsed_str} / {total_str}"
+        embed.add_field(name="Current Song", value=details, inline=False)
     else:
         embed.add_field(name="Current Song", value="No song playing", inline=False)
 
-    # Network check
-    import aiohttp
+    # Network check: try HEAD on the best URL we have
+    check_url = None
+    if cur_url and isinstance(cur_url, str) and cur_url.startswith(("http://", "https://")):
+        check_url = cur_url
+    elif q and isinstance(q[0][0], str) and q[0][0].startswith(("http://", "https://")):
+        check_url = q[0][0]
+
     try:
-        async with aiohttp.ClientSession() as session:
-            if q:
-                url = q[0]['url']
-                async with session.head(url, timeout=5) as resp:
+        if check_url:
+            async with aiohttp.ClientSession() as session:
+                async with session.head(check_url, timeout=5) as resp:
                     embed.add_field(name="Network Status", value=f"URL reachable: {resp.status}", inline=False)
-            else:
-                embed.add_field(name="Network Status", value="No URL to check", inline=False)
+        else:
+            embed.add_field(name="Network Status", value="No HTTP URL available to check", inline=False)
     except Exception as e:
         embed.add_field(name="Network Status", value=f"Error: {e}", inline=False)
 
-    await interaction.response.send_message(embed=embed)
-     
+    # Queue length
+    embed.add_field(name="Queue Length", value=str(len(q)), inline=True)
+
+    await interaction.followup.send(embed=embed, ephemeral=True)
+
+
+#
+# BOT START
+#
 
 @bot.event
 async def on_ready():
