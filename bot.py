@@ -12,6 +12,7 @@ from config import ALLOWED_USERS
 import discord
 import platform
 import imageio_ffmpeg as ffmpeg
+import aiohttp  # ⬅ add this at the top of the file
 
 os.environ["FFMPEG_BINARY"] = ffmpeg.get_ffmpeg_exe()
 
@@ -335,26 +336,29 @@ async def volume(interaction: discord.Interaction, level: int):
     player.volume = level / 100  # convert percent to 0.0–1.0
     await interaction.response.send_message(f"🔊 Volume set to **{level}%**.")
        
-@tree.command(name="debug", description="Check bot connection and network status")
-async def debug(interaction: discord.Interaction):
-    guild_id = interaction.guild_id
-    vc = interaction.guild.voice_client
-    queue = get_queue(guild_id)
 
-    embed = discord.Embed(title="🛠 Bot Debug Status", color=0x00ff00)
+@tree.command(name="debug", description="Check bot status and connection")
+async def debug(interaction: discord.Interaction):
+    vc = interaction.guild.voice_client
+    q = get_queue(interaction.guild_id)
+
+    embed = discord.Embed(title="Bot Debug Info", color=discord.Color.blurple())
 
     # Voice connection
     if vc and vc.is_connected():
         embed.add_field(name="Voice Status", value=f"Connected to: {vc.channel.name}", inline=False)
-        embed.add_field(name="Is Playing?", value=vc.is_playing(), inline=True)
-        embed.add_field(name="Is Paused?", value=vc.is_paused(), inline=True)
+        embed.add_field(name="Is Playing?", value=str(vc.is_playing()), inline=True)
+        embed.add_field(name="Is Paused?", value=str(vc.is_paused()), inline=True)
     else:
         embed.add_field(name="Voice Status", value="Not connected", inline=False)
 
     # Current song
-    if vc and vc.is_playing() and queue:
-        current_url, current_title = queue[0]
-        embed.add_field(name="Current Song", value=f"{current_title}\n{current_url}", inline=False)
+    if vc and vc.is_playing() and q:
+        embed.add_field(
+            name="Current Song",
+            value=f"{q[0]['title']}\n{q[0]['url']}",
+            inline=False
+        )
     elif vc and vc.is_playing():
         embed.add_field(name="Current Song", value="Unknown (playing directly)", inline=False)
     else:
@@ -363,8 +367,8 @@ async def debug(interaction: discord.Interaction):
     # Network check
     try:
         async with aiohttp.ClientSession() as session:
-            if queue:
-                url = queue[0][0]
+            if q:
+                url = q[0]["url"]
                 async with session.head(url, timeout=5) as resp:
                     embed.add_field(name="Network Status", value=f"URL reachable: {resp.status}", inline=False)
             else:
@@ -372,7 +376,8 @@ async def debug(interaction: discord.Interaction):
     except Exception as e:
         embed.add_field(name="Network Status", value=f"Error: {e}", inline=False)
 
-    await interaction.response.send_message(embed=embed)       
+    await interaction.response.send_message(embed=embed)
+     
 
 @bot.event
 async def on_ready():
