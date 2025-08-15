@@ -13,6 +13,11 @@ import discord
 import platform
 import imageio_ffmpeg as ffmpeg
 import aiohttp  # ⬅ add this at the top of the file
+import time
+
+CURRENT_TRACK = {}     # {guild_id: {"url": str, "title": str, "duration": int|None, "started_at": float, "seek_offset": float}}
+PENDING_RESTART = {}   # {guild_id: {"elapsed": float}}
+
 
 os.environ["FFMPEG_BINARY"] = ffmpeg.get_ffmpeg_exe()
 
@@ -124,6 +129,7 @@ async def play_next(voice_client, guild_id, interaction):
 
     bassboost_level = BASSBOOST_LEVELS.get(guild_id, 0)
 
+    # Build ffmpeg opts (no seek here; this is the start of the track)
     options = '-vn'
     if bassboost_level > 0:
         gain = min(bassboost_level, 5)
@@ -138,9 +144,32 @@ async def play_next(voice_client, guild_id, interaction):
     player = discord.PCMVolumeTransformer(source, volume=1)
     CURRENT_PLAYERS[guild_id] = player
 
+    # Record track start time so we can seek later
+    CURRENT_TRACK[guild_id] = {
+        "url": url,
+        "title": title,
+        "duration": duration or 0,
+        "started_at": time.monotonic(),
+        "seek_offset": 0.0
+    }
+
     def after_play(err):
         if err:
             print(f"Error in playback: {err}")
+
+        # If a filter-change restart is pending, do that instead of advancing the queue
+        if PENDING_RESTART.get(guild_id):
+            fut = asyncio.run_coroutine_threadsafe(
+                restart_same_track(voice_client, guild_id, interaction),
+                bot.loop
+            )
+            try:
+                fut.result()
+            except Exception as e:
+                print(f"Restart same track error: {e}")
+            return
+
+        # Normal advance to next song
         fut = asyncio.run_coroutine_threadsafe(play_next(voice_client, guild_id, interaction), bot.loop)
         try:
             fut.result()
@@ -149,12 +178,9 @@ async def play_next(voice_client, guild_id, interaction):
 
     voice_client.play(player, after=after_play)
 
-    # Update now playing message (your existing code)
-
-    # ✅ Update "Now Playing" message in last known channel
+    # --- update "Now Playing" message (unchanged) ---
     channel_id = bot.now_playing_channels.get(guild_id)
     channel = bot.get_channel(channel_id) if channel_id else None
-
     if channel:
         if guild_id in bot.now_playing_messages:
             try:
@@ -165,6 +191,72 @@ async def play_next(voice_client, guild_id, interaction):
         else:
             message = await channel.send(f"🎶 Now playing: **{title}**")
             bot.now_playing_messages[guild_id] = message
+
+
+async def restart_same_track(voice_client, guild_id, interaction):
+    """Called from after_play when a bassboost change requested a restart."""
+    try:
+        pending = PENDING_RESTART.pop(guild_id, None)
+        if not pending:
+            return
+
+        track = CURRENT_TRACK.get(guild_id)
+        if not track:
+            return
+
+        # Re-resolve a fresh audio_url because YouTube CDNs hand out short-lived URLs
+        ydl_opts = {
+            'format': 'bestaudio[ext=m4a]/bestaudio/best',
+            'quiet': True,
+            'noplaylist': True
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(track["url"], download=False)
+            audio_url = info['url']
+
+        bassboost_level = BASSBOOST_LEVELS.get(guild_id, 0)
+
+        # Seek to elapsed time BEFORE input (faster + accurate for HTTP)
+        elapsed = max(0.0, float(pending["elapsed"]))
+        before_opts = f'-ss {elapsed} -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -protocol_whitelist "file,http,https,tcp,tls,crypto"'
+
+        options = '-vn'
+        if bassboost_level > 0:
+            gain = min(bassboost_level, 5)
+            options += f' -af "bass=g={gain},volume=1"'
+
+        ffmpeg_opts = {
+            'before_options': before_opts,
+            'options': options
+        }
+
+        source = discord.FFmpegPCMAudio(audio_url, **ffmpeg_opts)
+        player = discord.PCMVolumeTransformer(source, volume=CURRENT_PLAYERS.get(guild_id, type("x", (), {"volume":1})) .volume if CURRENT_PLAYERS.get(guild_id) else 1)
+        CURRENT_PLAYERS[guild_id] = player
+
+        # Update track timing (we jumped forward)
+        track["seek_offset"] = elapsed
+        track["started_at"] = time.monotonic()
+
+        def after_play(err):
+            if err:
+                print(f"Error in playback (restart): {err}")
+            fut = asyncio.run_coroutine_threadsafe(play_next(voice_client, guild_id, interaction), bot.loop)
+            try:
+                fut.result()
+            except Exception as e:
+                print(f"Next song error: {e}")
+
+        voice_client.play(player, after=after_play)
+
+        # Keep the same "Now Playing" message; title unchanged
+
+    except Exception as e:
+        print(f"restart_same_track exception: {e}")
+        # If restart fails, just go to next track to avoid deadlock
+        fut = asyncio.run_coroutine_threadsafe(play_next(voice_client, guild_id, interaction), bot.loop)
+        fut.result()
+
 
 
 @tree.command(name="play", description="Play a song from YouTube")
@@ -277,36 +369,54 @@ async def shutdown(interaction: discord.Interaction):
 @tree.command(name="bassboost", description="Set bass boost level (0 to 5)")
 @app_commands.describe(level="Bass boost level: 0 to 5")
 async def bassboost(interaction: discord.Interaction, level: int):
+    await interaction.response.defer(ephemeral=False, thinking=False)  # avoids 10062 errors
+
     if not 0 <= level <= 5:
-        await interaction.response.send_message("❌ Please enter a level between 0 and 5.", ephemeral=True)
+        await interaction.followup.send("❌ Please enter a level between 0 and 5.")
         return
 
     guild_id = interaction.guild_id
     BASSBOOST_LEVELS[guild_id] = level
 
     vc = interaction.guild.voice_client
-    if vc and vc.is_playing():
-        vc.stop()  # This triggers after_play, restarting playback with new bass boost
+    track = CURRENT_TRACK.get(guild_id)
+
+    if vc and (vc.is_playing() or vc.is_paused()) and track:
+        # Compute elapsed time in current track
+        # elapsed = time since started + any previous seek_offset
+        started_at = track.get("started_at") or time.monotonic()
+        seek_offset = float(track.get("seek_offset", 0.0))
+        elapsed = (time.monotonic() - started_at) + seek_offset
+        # If we know duration, clamp
+        duration = track.get("duration") or 0
+        if duration:
+            elapsed = min(max(0.0, elapsed), max(0.0, duration - 1))
+
+        # Flag a same-track restart, then stop current decoder.
+        PENDING_RESTART[guild_id] = {"elapsed": elapsed}
+        vc.stop()  # Triggers after; after will see PENDING_RESTART and restart the SAME track
+    # else: nothing playing; next song (when started) will use new bass
 
     if level == 0:
-        await interaction.response.send_message("🎛️ Bass boost has been **disabled**.")
+        await interaction.followup.send("🎛️ Bass boost has been **disabled** (no skip).")
     else:
-        await interaction.response.send_message(f"🎛️ Bass boost level set to **{level}**.")
+        await interaction.followup.send(f"🎛️ Bass boost set to **{level}** and reapplied to the **current song**.")
+
 
 
 
 @bot.tree.command(name="queue", description="Show the current music queue")
-async def queue(interaction: discord.Interaction):
-    if not queue:
+async def queue_cmd(interaction: discord.Interaction):
+    q = get_queue(interaction.guild_id)
+    if not q:
         await interaction.response.send_message("The queue is currently empty.")
         return
 
-    # Works if queue items are dictionaries
+    # Works if queue items are dicts; your code stores tuples, so use tuple path
     try:
-        message = "\n".join(f"{idx+1}. {item['title']}" for idx, item in enumerate(queue))
-    except TypeError:
-        # Fallback for old (url, title) tuple format
-        message = "\n".join(f"{idx+1}. {title}" for idx, (_, title) in enumerate(queue))
+        message = "\n".join(f"{idx+1}. {item['title']}" for idx, item in enumerate(q))
+    except (TypeError, KeyError):
+        message = "\n".join(f"{idx+1}. {title}" for idx, (_, title, *_) in enumerate(q))
 
     await interaction.response.send_message(f"**Current Queue:**\n{message}")
 
