@@ -266,3 +266,32 @@ async def reply_safe(
         except Exception:
             pass
 
+async def send_or_edit_now_playing(
+    guild_id: int,
+    *,
+    bot: discord.Client,
+    now_playing_channels: dict,
+    now_playing_messages: dict,
+    current_players: dict,
+    current_track: dict,
+    queue_getter,
+    bass_levels: dict,
+    treble_levels: dict,
+    vocal_levels: dict,
+    allowed_mentions: discord.AllowedMentions | None = None,
+    view: discord.ui.View | None = None,   # <— NEW
+):
+    ...
+    msg = now_playing_messages.get(guild_id)
+    if msg:
+        try:
+            await msg.edit(embed=embed, content=None, view=view)  # <— pass view
+            return
+        except (discord.NotFound, discord.HTTPException):
+            now_playing_messages.pop(guild_id, None)
+
+    try:
+        new_msg = await channel.send(embed=embed, allowed_mentions=allowed_mentions, view=view)  # <— pass view
+        now_playing_messages[guild_id] = new_msg
+    except discord.HTTPException:
+        pass

@@ -25,6 +25,24 @@ from helper import (
     delete_now_playing_message,
 )
 
+from control import PlayerControls
+
+def controls_view():
+    return PlayerControls(
+        bot=bot,
+        now_playing_channels=NOW_PLAYING_CHANNELS,
+        now_playing_messages=NOW_PLAYING_MESSAGES,
+        current_players=CURRENT_PLAYERS,
+        current_track=CURRENT_TRACK,
+        queue_getter=get_queue,
+        bass_levels=BASSBOOST_LEVELS,
+        treble_levels=TREBLEBOOST_LEVELS,
+        vocal_levels=VOCALBOOST_LEVELS,
+        allowed_mentions=ALLOWED_NONE,
+    )
+
+
+
 # ---------- Basic Setup ----------
 os.environ["FFMPEG_BINARY"] = ffmpeg.get_ffmpeg_exe()
 load_dotenv()
