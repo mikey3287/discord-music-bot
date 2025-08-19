@@ -14,6 +14,8 @@ from dotenv import load_dotenv
 import imageio_ffmpeg as ffmpeg
 import aiohttp
 
+from helper import reply_safe
+
 from helper import (
     fmt_time,
     search_youtube,
@@ -628,33 +630,59 @@ async def debug_cmd(interaction: discord.Interaction):
 
 @tree.command(name="reset", description="Hard reset: stop audio, clear queue, remove Now Playing UI & filters")
 async def reset_cmd(interaction: discord.Interaction):
-    deferred = await safe_defer(interaction)
     guild_id = interaction.guild_id
-    vc = interaction.guild.voice_client
+    print(f"[RESET] invoked for guild {guild_id}")
 
+    # Try to acknowledge immediately (ephemeral)
+    acknowledged = False
     try:
+        if not interaction.response.is_done():
+            await interaction.response.send_message("♻️ Resetting…", ephemeral=True, allowed_mentions=ALLOWED_NONE)
+            acknowledged = True
+            print("[RESET] sent initial ephemeral ack")
+    except Exception as e:
+        print(f"[RESET] initial ack failed: {e}")
+
+    # ---- Stop & disconnect voice ----
+    try:
+        vc = interaction.guild.voice_client
         if vc:
+            print("[RESET] stopping and disconnecting voice")
             vc.stop()
-            await vc.disconnect()
-    except Exception:
-        pass
+            await vc.disconnect(force=True)
+    except Exception as e:
+        print(f"[RESET] voice disconnect error: {e}")
 
-    get_queue(guild_id).clear()
-    CURRENT_TRACK.pop(guild_id, None)
-    CURRENT_PLAYERS.pop(guild_id, None)
-    PENDING_RESTART.pop(guild_id, None)
-    BASSBOOST_LEVELS.pop(guild_id, None)
-    TREBLEBOOST_LEVELS.pop(guild_id, None)
-    VOCALBOOST_LEVELS.pop(guild_id, None)
+    # ---- Clear all state for this guild ----
+    try:
+        get_queue(guild_id).clear()
+        for m in (CURRENT_TRACK, CURRENT_PLAYERS, PENDING_RESTART,
+                  BASSBOOST_LEVELS, TREBLEBOOST_LEVELS, VOCALBOOST_LEVELS):
+            m.pop(guild_id, None)
 
-    await delete_now_playing_message(guild_id, now_playing_messages=NOW_PLAYING_MESSAGES)
-    NOW_PLAYING_CHANNELS.pop(guild_id, None)
+        # Delete the Now Playing message if it exists
+        await delete_now_playing_message(guild_id, now_playing_messages=NOW_PLAYING_MESSAGES)
+        NOW_PLAYING_CHANNELS.pop(guild_id, None)
+        print("[RESET] cleared queue, filters, messages, channels")
+    except Exception as e:
+        print(f"[RESET] state clear error: {e}")
 
-    msg = "♻️ Reset complete: disconnected, cleared queue/filters, and removed Now Playing."
-    if deferred:
-        await interaction.followup.send(msg, allowed_mentions=ALLOWED_NONE)
-    else:
-        await interaction.channel.send(msg, allowed_mentions=ALLOWED_NONE)
+    # ---- Final confirmation ----
+    final_msg = "✅ Reset complete: disconnected, cleared queue/filters, and removed Now Playing."
+    try:
+        if acknowledged:
+            await interaction.followup.send(final_msg, ephemeral=True, allowed_mentions=ALLOWED_NONE)
+        else:
+            # If we couldn't ack earlier, try a normal response first…
+            if not interaction.response.is_done():
+                await interaction.response.send_message(final_msg, ephemeral=True, allowed_mentions=ALLOWED_NONE)
+            else:
+                # …or last resort: post to the channel (works even if the interaction token died)
+                await interaction.channel.send(final_msg, allowed_mentions=ALLOWED_NONE)
+        print("[RESET] sent final confirmation")
+    except Exception as e:
+        print(f"[RESET] final confirm failed: {e}")
+
 
 # ---------- Moving progress bar refresh ----------
 @tasks.loop(seconds=2)

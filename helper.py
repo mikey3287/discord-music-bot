@@ -3,7 +3,6 @@ import time
 import asyncio
 from collections import deque
 from typing import Callable, Dict, Any
-
 import discord
 import yt_dlp
 
@@ -235,3 +234,35 @@ async def delete_now_playing_message(
         await msg.delete()
     except (discord.NotFound, discord.HTTPException):
         pass
+
+
+# helper.py
+async def reply_safe(
+    interaction: discord.Interaction,
+    content: str,
+    *,
+    ephemeral: bool = False,
+    allowed_mentions: discord.AllowedMentions | None = None,
+):
+    """Reply to an interaction, falling back to channel.send if the token is invalid.
+    Does not rely on globals from bot.py."""
+    if allowed_mentions is None:
+        # default: never ping anyone
+        allowed_mentions = discord.AllowedMentions.none()
+
+    try:
+        if not interaction.response.is_done():
+            await interaction.response.send_message(
+                content, ephemeral=ephemeral, allowed_mentions=allowed_mentions
+            )
+        else:
+            await interaction.followup.send(
+                content, ephemeral=ephemeral, allowed_mentions=allowed_mentions
+            )
+    except Exception:
+        # Fallback if interaction token is invalid / response failed
+        try:
+            await interaction.channel.send(content, allowed_mentions=allowed_mentions)
+        except Exception:
+            pass
+
