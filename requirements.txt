@@ -3,3 +3,4 @@ yt-dlp
 python-dotenv
 imageio-ffmpeg
 aiohttp
+PyNaCl
