@@ -1,0 +1,9 @@
+# Ignore virtual environment
+.venv/
+venv/
+
+# Ignore Python cache
+__pycache__/
+
+# Ignore dotenv file (your bot token)
+.env
