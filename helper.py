@@ -3,6 +3,7 @@ import time
 import asyncio
 from collections import deque
 from typing import Callable, Dict, Any
+
 import discord
 import yt_dlp
 
@@ -18,17 +19,17 @@ def fmt_time(seconds: float) -> str:
         return "?:??"
 
 def make_progress_bar(elapsed: float, total: float, width: int = 16) -> str:
+    """Progress bar with colored dot."""
     if not total or total <= 0:
         return "─" * width
     ratio = max(0.0, min(1.0, float(elapsed) / float(total)))
     pos = int(ratio * (width - 1))
-    return "".join("🔵" if i == pos else "─" for i in range(width))
+    chars = ["─"] * width
+    if width:
+        chars[pos] = "🟢"  # change to 🔵 / 🔴 / 🎵 etc.
+    return "".join(chars)
 
 async def safe_defer(interaction: discord.Interaction, *, ephemeral: bool = False) -> bool:
-    """
-    Try to defer the interaction. Returns True if deferred, False otherwise.
-    Handles 'Unknown interaction' (10062) so callers can fallback to channel.send.
-    """
     if interaction.response.is_done():
         return True
     try:
@@ -37,13 +38,35 @@ async def safe_defer(interaction: discord.Interaction, *, ephemeral: bool = Fals
     except (discord.NotFound, discord.HTTPException):
         return False
 
+async def reply_safe(
+    interaction: discord.Interaction,
+    content: str,
+    *,
+    ephemeral: bool = False,
+    allowed_mentions: discord.AllowedMentions | None = None,
+):
+    """Reply safely; falls back to channel.send if the token is invalid."""
+    if allowed_mentions is None:
+        allowed_mentions = discord.AllowedMentions.none()
+    try:
+        if not interaction.response.is_done():
+            await interaction.response.send_message(
+                content, ephemeral=ephemeral, allowed_mentions=allowed_mentions
+            )
+        else:
+            await interaction.followup.send(
+                content, ephemeral=ephemeral, allowed_mentions=allowed_mentions
+            )
+    except Exception:
+        try:
+            await interaction.channel.send(content, allowed_mentions=allowed_mentions)
+        except Exception:
+            pass
+
 # ---------- YouTube Search ----------
 
 async def search_youtube(query: str):
-    """
-    Returns list of (url, title, duration) from url/playlist/search.
-    Uses yt_dlp extract_flat for fast metadata.
-    """
+    """Returns list of (url, title, duration) from url/playlist/search."""
     if not query.startswith("http"):
         query = f"ytsearch:{query}"
 
@@ -80,11 +103,6 @@ def build_filter_chain(
     treble_levels: Dict[int, int],
     vocal_levels: Dict[int, int],
 ) -> str:
-    """
-    Build an FFmpeg -af chain using current bass/treble/vocal levels.
-    Levels are 0..5 mapped roughly to dB gain.
-    Returns a string to pass as FFmpeg 'options'.
-    """
     bass = bass_levels.get(guild_id, 0)
     treb = treble_levels.get(guild_id, 0)
     vocal = vocal_levels.get(guild_id, 0)
@@ -98,8 +116,7 @@ def build_filter_chain(
         filters.append(f"treble=g={g}")
     if vocal > 0:
         g = min(vocal, 5)
-        # presence region ~3 kHz, width ~2 kHz
-        filters.append(f"equalizer=f=3000:width_type=h:width=2000:g={g}")
+        filters.append(f"equalizer=f=3000:width_type=h:width=2000:g={g}")  # presence boost
 
     if not filters:
         return "-vn"
@@ -118,10 +135,6 @@ def build_now_playing_embed(
     vocal_levels: Dict[int, int],
     bot: discord.Client,
 ) -> discord.Embed:
-    """
-    Build the playlist embed with current + next up (no external link).
-    Shows bot avatar as thumbnail, moving progress bar derived from timestamps.
-    """
     q = queue_getter(guild_id)
     track = current_track.get(guild_id)
 
@@ -134,7 +147,6 @@ def build_now_playing_embed(
 
     embed = discord.Embed(title="🎶 Now Playing", color=discord.Color.blurple())
 
-    # Current (no URL shown)
     if track:
         title = track.get("title") or "Unknown title"
         duration = track.get("duration") or 0
@@ -152,7 +164,6 @@ def build_now_playing_embed(
     else:
         embed.add_field(name="Nothing playing", value="Use `/play <url or search>`", inline=False)
 
-    # Next up (first 10)
     if q:
         lines = []
         for i, item in enumerate(list(q)[:10], 1):
@@ -162,13 +173,11 @@ def build_now_playing_embed(
     else:
         embed.add_field(name="▶️ Next Up", value="_Queue is empty_", inline=False)
 
-    # Footer/status
     bass = bass_levels.get(guild_id, 0)
     treb = treble_levels.get(guild_id, 0)
     voc  = vocal_levels.get(guild_id, 0)
     embed.set_footer(text=" | ".join([f"Vol: {vol}%", f"Bass: {bass}", f"Treble: {treb}", f"Vocal: {voc}"]))
 
-    # Bot avatar as thumbnail if available
     if bot.user and bot.user.display_avatar:
         embed.set_thumbnail(url=bot.user.display_avatar.url)
 
@@ -187,8 +196,8 @@ async def send_or_edit_now_playing(
     treble_levels: Dict[int, int],
     vocal_levels: Dict[int, int],
     allowed_mentions: discord.AllowedMentions | None = None,
+    view: discord.ui.View | None = None,   # << allow attaching a View
 ):
-    """Create or update the single playlist embed for this guild."""
     channel_id = now_playing_channels.get(guild_id)
     if not channel_id:
         return
@@ -210,13 +219,13 @@ async def send_or_edit_now_playing(
     msg = now_playing_messages.get(guild_id)
     if msg:
         try:
-            await msg.edit(embed=embed, content=None)
+            await msg.edit(embed=embed, content=None, view=view)
             return
         except (discord.NotFound, discord.HTTPException):
             now_playing_messages.pop(guild_id, None)
 
     try:
-        new_msg = await channel.send(embed=embed, allowed_mentions=allowed_mentions)
+        new_msg = await channel.send(embed=embed, allowed_mentions=allowed_mentions, view=view)
         now_playing_messages[guild_id] = new_msg
     except discord.HTTPException:
         pass
@@ -226,72 +235,10 @@ async def delete_now_playing_message(
     *,
     now_playing_messages: Dict[int, discord.Message],
 ):
-    """Delete the stored Now Playing message if it still exists."""
     msg = now_playing_messages.pop(guild_id, None)
     if not msg:
         return
     try:
         await msg.delete()
     except (discord.NotFound, discord.HTTPException):
-        pass
-
-
-# helper.py
-async def reply_safe(
-    interaction: discord.Interaction,
-    content: str,
-    *,
-    ephemeral: bool = False,
-    allowed_mentions: discord.AllowedMentions | None = None,
-):
-    """Reply to an interaction, falling back to channel.send if the token is invalid.
-    Does not rely on globals from bot.py."""
-    if allowed_mentions is None:
-        # default: never ping anyone
-        allowed_mentions = discord.AllowedMentions.none()
-
-    try:
-        if not interaction.response.is_done():
-            await interaction.response.send_message(
-                content, ephemeral=ephemeral, allowed_mentions=allowed_mentions
-            )
-        else:
-            await interaction.followup.send(
-                content, ephemeral=ephemeral, allowed_mentions=allowed_mentions
-            )
-    except Exception:
-        # Fallback if interaction token is invalid / response failed
-        try:
-            await interaction.channel.send(content, allowed_mentions=allowed_mentions)
-        except Exception:
-            pass
-
-async def send_or_edit_now_playing(
-    guild_id: int,
-    *,
-    bot: discord.Client,
-    now_playing_channels: dict,
-    now_playing_messages: dict,
-    current_players: dict,
-    current_track: dict,
-    queue_getter,
-    bass_levels: dict,
-    treble_levels: dict,
-    vocal_levels: dict,
-    allowed_mentions: discord.AllowedMentions | None = None,
-    view: discord.ui.View | None = None,   # <— NEW
-):
-    ...
-    msg = now_playing_messages.get(guild_id)
-    if msg:
-        try:
-            await msg.edit(embed=embed, content=None, view=view)  # <— pass view
-            return
-        except (discord.NotFound, discord.HTTPException):
-            now_playing_messages.pop(guild_id, None)
-
-    try:
-        new_msg = await channel.send(embed=embed, allowed_mentions=allowed_mentions, view=view)  # <— pass view
-        now_playing_messages[guild_id] = new_msg
-    except discord.HTTPException:
         pass
