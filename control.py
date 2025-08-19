@@ -1,21 +1,16 @@
 # control.py
-import time
 import discord
-
 from helper import reply_safe, send_or_edit_now_playing
 
 class PlayerControls(discord.ui.View):
     """Persistent control panel for music playback."""
-    def __init__(self, *, bot: discord.Client,
-                 now_playing_channels: dict,
-                 now_playing_messages: dict,
-                 current_players: dict,
-                 current_track: dict,
-                 queue_getter,
-                 bass_levels: dict,
-                 treble_levels: dict,
-                 vocal_levels: dict,
-                 allowed_mentions: discord.AllowedMentions | None = None):
+    def __init__(
+        self, *, bot: discord.Client,
+        now_playing_channels: dict, now_playing_messages: dict,
+        current_players: dict, current_track: dict, queue_getter,
+        bass_levels: dict, treble_levels: dict, vocal_levels: dict,
+        allowed_mentions: discord.AllowedMentions | None = None
+    ):
         super().__init__(timeout=None)  # persistent
         self.bot = bot
         self.now_playing_channels = now_playing_channels
@@ -28,7 +23,7 @@ class PlayerControls(discord.ui.View):
         self.vocal_levels = vocal_levels
         self.allowed_mentions = allowed_mentions or discord.AllowedMentions.none()
 
-    # -------- helpers --------
+    # ---- helpers ----
     async def _refresh(self, guild_id: int):
         await send_or_edit_now_playing(
             guild_id,
@@ -42,17 +37,17 @@ class PlayerControls(discord.ui.View):
             treble_levels=self.treble_levels,
             vocal_levels=self.vocal_levels,
             allowed_mentions=self.allowed_mentions,
-            view=self,  # keep buttons attached on edits
+            view=self,  # keep controls visible
         )
 
     def _vc(self, interaction: discord.Interaction):
         g = interaction.guild
         return g.voice_client if g else None
 
-    # -------- Buttons --------
+    # ---- Buttons (custom_id is REQUIRED for persistent views) ----
 
-    @discord.ui.button(label="Pause/Resume", style=discord.ButtonStyle.primary, emoji="⏯️")
-    async def btn_toggle(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="Pause/Resume", style=discord.ButtonStyle.primary, emoji="⏯️", custom_id="controls:toggle")
+    async def btn_toggle(self, interaction: discord.Interaction, _: discord.ui.Button):
         await interaction.response.defer(ephemeral=True, thinking=False)
         vc = self._vc(interaction)
         if not vc:
@@ -67,19 +62,19 @@ class PlayerControls(discord.ui.View):
             await reply_safe(interaction, "ℹ️ Nothing to play.", ephemeral=True)
         await self._refresh(interaction.guild_id)
 
-    @discord.ui.button(label="Skip", style=discord.ButtonStyle.secondary, emoji="⏭️")
-    async def btn_skip(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="Skip", style=discord.ButtonStyle.secondary, emoji="⏭️", custom_id="controls:skip")
+    async def btn_skip(self, interaction: discord.Interaction, _: discord.ui.Button):
         await interaction.response.defer(ephemeral=True, thinking=False)
         vc = self._vc(interaction)
         if vc and vc.is_playing():
-            vc.stop()  # our after() will play the next
+            vc.stop()  # after callback will start next
             await reply_safe(interaction, "⏭️ Skipping…", ephemeral=True)
             await self._refresh(interaction.guild_id)
         else:
             await reply_safe(interaction, "❌ Nothing is playing.", ephemeral=True)
 
-    @discord.ui.button(label="Stop", style=discord.ButtonStyle.danger, emoji="⏹️")
-    async def btn_stop(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="Stop", style=discord.ButtonStyle.danger, emoji="⏹️", custom_id="controls:stop")
+    async def btn_stop(self, interaction: discord.Interaction, _: discord.ui.Button):
         await interaction.response.defer(ephemeral=True, thinking=False)
         vc = self._vc(interaction)
         if vc:
@@ -88,7 +83,6 @@ class PlayerControls(discord.ui.View):
                 await vc.disconnect(force=True)
             except Exception:
                 pass
-        # Clear queue + state
         gid = interaction.guild_id
         self.get_queue(gid).clear()
         self.current_track.pop(gid, None)
@@ -96,8 +90,8 @@ class PlayerControls(discord.ui.View):
         await reply_safe(interaction, "🛑 Stopped & cleared.", ephemeral=True)
         await self._refresh(gid)
 
-    @discord.ui.button(label="- Vol", style=discord.ButtonStyle.secondary, emoji="🔉")
-    async def btn_vol_down(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="- Vol", style=discord.ButtonStyle.secondary, emoji="🔉", custom_id="controls:vol_down")
+    async def btn_vol_down(self, interaction: discord.Interaction, _: discord.ui.Button):
         await interaction.response.defer(ephemeral=True, thinking=False)
         player = self.current_players.get(interaction.guild_id)
         if not player:
@@ -107,8 +101,8 @@ class PlayerControls(discord.ui.View):
         await reply_safe(interaction, f"🔉 Volume: {int(newv*100)}%", ephemeral=True)
         await self._refresh(interaction.guild_id)
 
-    @discord.ui.button(label="+ Vol", style=discord.ButtonStyle.secondary, emoji="🔊")
-    async def btn_vol_up(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="+ Vol", style=discord.ButtonStyle.secondary, emoji="🔊", custom_id="controls:vol_up")
+    async def btn_vol_up(self, interaction: discord.Interaction, _: discord.ui.Button):
         await interaction.response.defer(ephemeral=True, thinking=False)
         player = self.current_players.get(interaction.guild_id)
         if not player:
@@ -118,9 +112,8 @@ class PlayerControls(discord.ui.View):
         await reply_safe(interaction, f"🔊 Volume: {int(newv*100)}%", ephemeral=True)
         await self._refresh(interaction.guild_id)
 
-    @discord.ui.button(label="Queue", style=discord.ButtonStyle.secondary, emoji="📋")
-    async def btn_queue(self, interaction: discord.Interaction, button: discord.ui.Button):
+    @discord.ui.button(label="Queue", style=discord.ButtonStyle.secondary, emoji="📋", custom_id="controls:queue")
+    async def btn_queue(self, interaction: discord.Interaction, _: discord.ui.Button):
         await interaction.response.defer(ephemeral=True, thinking=False)
-        # Just refresh the Now Playing embed (it already includes Next Up)
         await self._refresh(interaction.guild_id)
         await reply_safe(interaction, "📋 Now Playing refreshed.", ephemeral=True)

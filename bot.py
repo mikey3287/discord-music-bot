@@ -15,6 +15,7 @@ import imageio_ffmpeg as ffmpeg
 import aiohttp
 
 from helper import reply_safe
+from control import PlayerControls
 
 from helper import (
     fmt_time,
@@ -122,6 +123,7 @@ async def play_next(voice_client: discord.VoiceClient, guild_id: int, interactio
             treble_levels=TREBLEBOOST_LEVELS,
             vocal_levels=VOCALBOOST_LEVELS,
             allowed_mentions=ALLOWED_NONE,
+            view=controls_view(),
         )
         await asyncio.sleep(1)
         try:
@@ -728,15 +730,37 @@ async def _progress_tick():
         except Exception:
             pass
 
+@tree.command(name="controls", description="Test: send the control panel here")
+async def controls_cmd(interaction: discord.Interaction):
+    NOW_PLAYING_CHANNELS[interaction.guild_id] = interaction.channel.id
+    await interaction.response.send_message("Controls Panel", view=controls_view())
+
+
 # ---------- Lifecycle ----------
 @bot.event
 async def on_ready():
     activity = discord.Activity(type=discord.ActivityType.listening, name="/play")
     await bot.change_presence(status=discord.Status.online, activity=activity)
     await tree.sync()
+
+    # ✅ Register the persistent PlayerControls view
+    bot.add_view(PlayerControls(
+        bot=bot,
+        now_playing_channels=NOW_PLAYING_CHANNELS,
+        now_playing_messages=NOW_PLAYING_MESSAGES,
+        current_players=CURRENT_PLAYERS,
+        current_track=CURRENT_TRACK,
+        queue_getter=get_queue,
+        bass_levels=BASSBOOST_LEVELS,
+        treble_levels=TREBLEBOOST_LEVELS,
+        vocal_levels=VOCALBOOST_LEVELS
+    ))
+
     if not _progress_tick.is_running():
         _progress_tick.start()
+
     print(f"✅ Logged in as {bot.user}!")
-    print("successfully finished startup")
+    print("Successfully finished startup")
+
 
 bot.run(TOKEN)
