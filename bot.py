@@ -4,6 +4,7 @@ import time
 import asyncio
 import platform
 from collections import deque
+from typing import Optional
 
 import discord
 from discord.ext import commands, tasks
@@ -14,9 +15,6 @@ from dotenv import load_dotenv
 import imageio_ffmpeg as ffmpeg
 import aiohttp
 
-from helper import reply_safe
-from control import PlayerControls
-
 from helper import (
     fmt_time,
     search_youtube,
@@ -24,30 +22,18 @@ from helper import (
     build_filter_chain,
     send_or_edit_now_playing,
     delete_now_playing_message,
+    reply_safe,
 )
-
 from control import PlayerControls
-
-def controls_view():
-    return PlayerControls(
-        bot=bot,
-        now_playing_channels=NOW_PLAYING_CHANNELS,
-        now_playing_messages=NOW_PLAYING_MESSAGES,
-        current_players=CURRENT_PLAYERS,
-        current_track=CURRENT_TRACK,
-        queue_getter=get_queue,
-        bass_levels=BASSBOOST_LEVELS,
-        treble_levels=TREBLEBOOST_LEVELS,
-        vocal_levels=VOCALBOOST_LEVELS,
-        allowed_mentions=ALLOWED_NONE,
-    )
-
-
+from config import load_theme_data, save_theme_data, ALLOWED_USERS
 
 # ---------- Basic Setup ----------
 os.environ["FFMPEG_BINARY"] = ffmpeg.get_ffmpeg_exe()
 load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
+
+if not TOKEN:
+    raise RuntimeError("DISCORD_TOKEN not found in .env")
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -63,7 +49,7 @@ if not discord.opus.is_loaded():
     if system == "Darwin":  # macOS
         possible_paths = [
             "/opt/homebrew/opt/opus/lib/libopus.dylib",  # Apple Silicon
-            "/usr/local/opt/opus/lib/libopus.dylib"      # Intel Macs
+            "/usr/local/opt/opus/lib/libopus.dylib",     # Intel Macs
         ]
         for p in possible_paths:
             if os.path.exists(p):
@@ -80,32 +66,86 @@ if not discord.opus.is_loaded():
         raise OSError(f"Unsupported OS: {system}")
 
 # ---------- State ----------
-SONG_QUEUES = {}            # {guild_id: deque([(url, title, duration), ...])}
-CURRENT_PLAYERS = {}        # {guild_id: PCMVolumeTransformer}
-CURRENT_TRACK = {}          # {guild_id: {"url","title","duration","started_at","seek_offset"}}
-PENDING_RESTART = {}        # {guild_id: {"elapsed": float}}
-BASSBOOST_LEVELS = {}       # {guild_id: 0..5}
-TREBLEBOOST_LEVELS = {}     # {guild_id: 0..5}
-VOCALBOOST_LEVELS = {}      # {guild_id: 0..5}
+SONG_QUEUES: dict[int, deque] = {}            # {guild_id: deque([(url, title, duration), ...])}
+CURRENT_PLAYERS: dict[int, discord.PCMVolumeTransformer] = {}  # {guild_id: PCMVolumeTransformer}
+CURRENT_TRACK: dict[int, dict] = {}          # {guild_id: {"url","title","duration","started_at","seek_offset"}}
+PENDING_RESTART: dict[int, dict] = {}        # {guild_id: {"elapsed": float}}
+BASSBOOST_LEVELS: dict[int, int] = {}        # {guild_id: 0..5}
+TREBLEBOOST_LEVELS: dict[int, int] = {}      # {guild_id: 0..5}
+VOCALBOOST_LEVELS: dict[int, int] = {}       # {guild_id: 0..5}
 
-NOW_PLAYING_CHANNELS = {}   # {guild_id: channel_id}
-NOW_PLAYING_MESSAGES = {}   # {guild_id: message_obj}
+NOW_PLAYING_CHANNELS: dict[int, int] = {}    # {guild_id: channel_id}
+NOW_PLAYING_MESSAGES: dict[int, discord.Message] = {}   # {guild_id: message_obj}
+
 
 def get_queue(guild_id: int) -> deque:
     return SONG_QUEUES.setdefault(guild_id, deque())
+
+
+def controls_view() -> PlayerControls:
+    return PlayerControls(
+        bot=bot,
+        now_playing_channels=NOW_PLAYING_CHANNELS,
+        now_playing_messages=NOW_PLAYING_MESSAGES,
+        current_players=CURRENT_PLAYERS,
+        current_track=CURRENT_TRACK,
+        queue_getter=get_queue,
+        bass_levels=BASSBOOST_LEVELS,
+        treble_levels=TREBLEBOOST_LEVELS,
+        vocal_levels=VOCALBOOST_LEVELS,
+        allowed_mentions=ALLOWED_NONE,
+    )
+
+# ---------- Theme-based presence ----------
+def get_theme_presence() -> str:
+    data = load_theme_data()
+    mode = data.get("mode", "normal")
+
+    if mode == "christmas":
+        return "🎅 Holiday Mix"
+    if mode == "dark":
+        return "🌙 /play"
+    if mode == "neon":
+        return "🌈 Neon Waves"
+    if mode == "pastel":
+        return "💖 Soft Beats"
+    if mode == "winter":
+        return "❄️ Snowy Melodies"
+    if mode == "custom":
+        return "🎨 Custom Theme Active"
+
+    return "/play"  # normal fallback
+
+async def refresh_presence():
+    activity_text = get_theme_presence()
+    activity = discord.Activity(
+        type=discord.ActivityType.listening,
+        name=activity_text,
+    )
+    await bot.change_presence(status=discord.Status.online, activity=activity)
 
 # ---------- Playback Core ----------
 async def _get_audio_url(original_url: str) -> str:
     ydl_opts = {
         "format": "bestaudio[ext=m4a]/bestaudio/best",
         "quiet": True,
-        "noplaylist": True
+        "noplaylist": True,
     }
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        info = ydl.extract_info(original_url, download=False)
-        return info["url"]
 
-async def play_next(voice_client: discord.VoiceClient, guild_id: int, interaction: discord.Interaction | None):
+    def _extract(u: str) -> str:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(u, download=False)
+            return info["url"]
+
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(None, lambda: _extract(original_url))
+
+
+async def play_next(
+    voice_client: discord.VoiceClient,
+    guild_id: int,
+    interaction: Optional[discord.Interaction],
+):
     q = get_queue(guild_id)
     if not q:
         # queue finished
@@ -142,8 +182,11 @@ async def play_next(voice_client: discord.VoiceClient, guild_id: int, interactio
         VOCALBOOST_LEVELS,
     )
     ffmpeg_opts = {
-        "before_options": '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -protocol_whitelist "file,http,https,tcp,tls,crypto"',
-        "options": options
+        "before_options": (
+            '-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 '
+            '-protocol_whitelist "file,http,https,tcp,tls,crypto"'
+        ),
+        "options": options,
     }
 
     source = discord.FFmpegPCMAudio(audio_url, **ffmpeg_opts)
@@ -158,7 +201,7 @@ async def play_next(voice_client: discord.VoiceClient, guild_id: int, interactio
         "title": title,
         "duration": duration or 0,
         "started_at": time.monotonic(),
-        "seek_offset": 0.0
+        "seek_offset": 0.0,
     }
 
     # Update the playlist embed right away
@@ -174,16 +217,18 @@ async def play_next(voice_client: discord.VoiceClient, guild_id: int, interactio
         treble_levels=TREBLEBOOST_LEVELS,
         vocal_levels=VOCALBOOST_LEVELS,
         allowed_mentions=ALLOWED_NONE,
+        view=controls_view(),
     )
 
     def after_play(err):
         if err:
             print(f"Error in playback: {err}")
 
+        # If a filter change requested restart
         if PENDING_RESTART.get(guild_id):
             fut = asyncio.run_coroutine_threadsafe(
                 restart_same_track(voice_client, guild_id, interaction),
-                bot.loop
+                bot.loop,
             )
             try:
                 fut.result()
@@ -193,7 +238,7 @@ async def play_next(voice_client: discord.VoiceClient, guild_id: int, interactio
 
         fut = asyncio.run_coroutine_threadsafe(
             play_next(voice_client, guild_id, interaction),
-            bot.loop
+            bot.loop,
         )
         try:
             fut.result()
@@ -202,7 +247,12 @@ async def play_next(voice_client: discord.VoiceClient, guild_id: int, interactio
 
     voice_client.play(player, after=after_play)
 
-async def restart_same_track(voice_client: discord.VoiceClient, guild_id: int, interaction: discord.Interaction | None):
+
+async def restart_same_track(
+    voice_client: discord.VoiceClient,
+    guild_id: int,
+    interaction: Optional[discord.Interaction],
+):
     """Rebuild ffmpeg with seek + new filters for current song."""
     try:
         pending = PENDING_RESTART.pop(guild_id, None)
@@ -215,7 +265,10 @@ async def restart_same_track(voice_client: discord.VoiceClient, guild_id: int, i
         audio_url = await _get_audio_url(track["url"])
 
         elapsed = max(0.0, float(pending["elapsed"]))
-        before_opts = f'-ss {elapsed} -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 -protocol_whitelist "file,http,https,tcp,tls,crypto"'
+        before_opts = (
+            f'-ss {elapsed} -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5 '
+            '-protocol_whitelist "file,http,https,tcp,tls,crypto"'
+        )
 
         options = build_filter_chain(
             guild_id,
@@ -226,7 +279,8 @@ async def restart_same_track(voice_client: discord.VoiceClient, guild_id: int, i
         ffmpeg_opts = {"before_options": before_opts, "options": options}
 
         source = discord.FFmpegPCMAudio(audio_url, **ffmpeg_opts)
-        vol = CURRENT_PLAYERS.get(guild_id).volume if CURRENT_PLAYERS.get(guild_id) else 1
+        prev = CURRENT_PLAYERS.get(guild_id)
+        vol = prev.volume if prev else 1.0
         player = discord.PCMVolumeTransformer(source, volume=vol)
         CURRENT_PLAYERS[guild_id] = player
 
@@ -246,6 +300,7 @@ async def restart_same_track(voice_client: discord.VoiceClient, guild_id: int, i
             treble_levels=TREBLEBOOST_LEVELS,
             vocal_levels=VOCALBOOST_LEVELS,
             allowed_mentions=ALLOWED_NONE,
+            view=controls_view(),
         )
 
         def after_play(err):
@@ -253,7 +308,7 @@ async def restart_same_track(voice_client: discord.VoiceClient, guild_id: int, i
                 print(f"Error in playback (restart): {err}")
             fut = asyncio.run_coroutine_threadsafe(
                 play_next(voice_client, guild_id, interaction),
-                bot.loop
+                bot.loop,
             )
             try:
                 fut.result()
@@ -264,10 +319,14 @@ async def restart_same_track(voice_client: discord.VoiceClient, guild_id: int, i
 
     except Exception as e:
         print(f"restart_same_track exception: {e}")
-        fut = asyncio.run_coroutine_threadsafe(play_next(voice_client, guild_id, interaction), bot.loop)
+        fut = asyncio.run_coroutine_threadsafe(
+            play_next(voice_client, guild_id, interaction),
+            bot.loop,
+        )
         fut.result()
 
 # ---------- Commands ----------
+
 @tree.command(name="play", description="Play a song or playlist from YouTube (URL or search).")
 @app_commands.describe(query="YouTube URL/playlist or search terms")
 async def play_cmd(interaction: discord.Interaction, query: str):
@@ -284,10 +343,11 @@ async def play_cmd(interaction: discord.Interaction, query: str):
     try:
         results = await search_youtube(query)
         if not results:
+            msg = "❌ No results found."
             if deferred:
-                await interaction.followup.send("❌ No results found.", allowed_mentions=ALLOWED_NONE)
+                await interaction.followup.send(msg, allowed_mentions=ALLOWED_NONE)
             else:
-                await interaction.channel.send("❌ No results found.", allowed_mentions=ALLOWED_NONE)
+                await interaction.channel.send(msg, allowed_mentions=ALLOWED_NONE)
             return
 
         NOW_PLAYING_CHANNELS[interaction.guild_id] = interaction.channel.id
@@ -330,6 +390,7 @@ async def play_cmd(interaction: discord.Interaction, query: str):
         else:
             await interaction.channel.send(err, allowed_mentions=ALLOWED_NONE)
 
+
 @tree.command(name="skip", description="Skip the current song")
 async def skip_cmd(interaction: discord.Interaction):
     deferred = await safe_defer(interaction)
@@ -355,6 +416,7 @@ async def skip_cmd(interaction: discord.Interaction):
         allowed_mentions=ALLOWED_NONE,
     )
 
+
 @tree.command(name="pause", description="Pause the music")
 async def pause_cmd(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
@@ -364,6 +426,7 @@ async def pause_cmd(interaction: discord.Interaction):
     else:
         await interaction.response.send_message("❌ Nothing is playing.", allowed_mentions=ALLOWED_NONE)
 
+
 @tree.command(name="resume", description="Resume the music")
 async def resume_cmd(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
@@ -372,6 +435,7 @@ async def resume_cmd(interaction: discord.Interaction):
         await interaction.response.send_message("▶️ Resumed.", allowed_mentions=ALLOWED_NONE)
     else:
         await interaction.response.send_message("❌ Nothing is paused.", allowed_mentions=ALLOWED_NONE)
+
 
 @tree.command(name="stop", description="Stop and clear the queue")
 async def stop_cmd(interaction: discord.Interaction):
@@ -405,18 +469,25 @@ async def stop_cmd(interaction: discord.Interaction):
         allowed_mentions=ALLOWED_NONE,
     )
 
+
 @tree.command(name="volume", description="Set playback volume (0-100%)")
 @app_commands.describe(level="0 to 100")
 async def volume_cmd(interaction: discord.Interaction, level: int):
     if not 0 <= level <= 100:
-        await interaction.response.send_message("❌ Enter a volume between 0 and 100.", ephemeral=True, allowed_mentions=ALLOWED_NONE)
+        await interaction.response.send_message(
+            "❌ Enter a volume between 0 and 100.", ephemeral=True, allowed_mentions=ALLOWED_NONE
+        )
         return
     player = CURRENT_PLAYERS.get(interaction.guild_id)
     if not player:
-        await interaction.response.send_message("❌ No music is playing.", ephemeral=True, allowed_mentions=ALLOWED_NONE)
+        await interaction.response.send_message(
+            "❌ No music is playing.", ephemeral=True, allowed_mentions=ALLOWED_NONE
+        )
         return
     player.volume = level / 100.0
-    await interaction.response.send_message(f"🔊 Volume set to **{level}%**.", allowed_mentions=ALLOWED_NONE)
+    await interaction.response.send_message(
+        f"🔊 Volume set to **{level}%**.", allowed_mentions=ALLOWED_NONE
+    )
     await send_or_edit_now_playing(
         interaction.guild_id,
         bot=bot,
@@ -431,7 +502,11 @@ async def volume_cmd(interaction: discord.Interaction, level: int):
         allowed_mentions=ALLOWED_NONE,
     )
 
-@tree.command(name="bassboost", description="Set bass boost (0-5) — reapplies to the current song without skipping")
+
+@tree.command(
+    name="bassboost",
+    description="Set bass boost (0-5) — reapplies to the current song without skipping",
+)
 @app_commands.describe(level="0 to 5")
 async def bassboost_cmd(interaction: discord.Interaction, level: int):
     deferred = await safe_defer(interaction)
@@ -481,7 +556,11 @@ async def bassboost_cmd(interaction: discord.Interaction, level: int):
         allowed_mentions=ALLOWED_NONE,
     )
 
-@tree.command(name="trebleboost", description="Set treble boost (0-5) — reapplies to the current song without skipping")
+
+@tree.command(
+    name="trebleboost",
+    description="Set treble boost (0-5) — reapplies to the current song without skipping",
+)
 @app_commands.describe(level="0 to 5")
 async def trebleboost_cmd(interaction: discord.Interaction, level: int):
     deferred = await safe_defer(interaction)
@@ -530,7 +609,11 @@ async def trebleboost_cmd(interaction: discord.Interaction, level: int):
         allowed_mentions=ALLOWED_NONE,
     )
 
-@tree.command(name="vocalboost", description="Set vocal boost (0-5) — reapplies to the current song without skipping")
+
+@tree.command(
+    name="vocalboost",
+    description="Set vocal boost (0-5) — reapplies to the current song without skipping",
+)
 @app_commands.describe(level="0 to 5")
 async def vocalboost_cmd(interaction: discord.Interaction, level: int):
     deferred = await safe_defer(interaction)
@@ -579,6 +662,7 @@ async def vocalboost_cmd(interaction: discord.Interaction, level: int):
         allowed_mentions=ALLOWED_NONE,
     )
 
+
 @tree.command(name="queue", description="Show the queue in an embed (same as Now Playing)")
 async def queue_cmd(interaction: discord.Interaction):
     deferred = await safe_defer(interaction, ephemeral=True)
@@ -596,10 +680,12 @@ async def queue_cmd(interaction: discord.Interaction):
         vocal_levels=VOCALBOOST_LEVELS,
         allowed_mentions=ALLOWED_NONE,
     )
+    msg = "📋 Queue/Now Playing updated above."
     if deferred:
-        await interaction.followup.send("📋 Queue/Now Playing updated above.", ephemeral=True, allowed_mentions=ALLOWED_NONE)
+        await interaction.followup.send(msg, ephemeral=True, allowed_mentions=ALLOWED_NONE)
     else:
-        await interaction.channel.send("📋 Queue/Now Playing updated above.", allowed_mentions=ALLOWED_NONE)
+        await interaction.channel.send(msg, allowed_mentions=ALLOWED_NONE)
+
 
 @tree.command(name="debug", description="Check bot status and connection")
 async def debug_cmd(interaction: discord.Interaction):
@@ -619,7 +705,11 @@ async def debug_cmd(interaction: discord.Interaction):
 
     track = CURRENT_TRACK.get(guild_id)
     if track:
-        elapsed = (time.monotonic() - (track.get("started_at") or time.monotonic())) + float(track.get("seek_offset", 0.0))
+        elapsed = (
+            time.monotonic()
+            - (track.get("started_at") or time.monotonic())
+            + float(track.get("seek_offset", 0.0))
+        )
         details = f"{track.get('title')}\n⏱ {fmt_time(elapsed)} / {fmt_time(track.get('duration') or 0)}"
         embed.add_field(name="Current Song", value=details, inline=False)
     else:
@@ -647,6 +737,7 @@ async def debug_cmd(interaction: discord.Interaction):
         await interaction.followup.send(embed=embed, ephemeral=True, allowed_mentions=ALLOWED_NONE)
     else:
         await interaction.channel.send(embed=embed, allowed_mentions=ALLOWED_NONE)
+
 
 @tree.command(name="reset", description="Hard reset: stop audio, clear queue, remove Now Playing UI & filters")
 async def reset_cmd(interaction: discord.Interaction):
@@ -676,8 +767,14 @@ async def reset_cmd(interaction: discord.Interaction):
     # ---- Clear all state for this guild ----
     try:
         get_queue(guild_id).clear()
-        for m in (CURRENT_TRACK, CURRENT_PLAYERS, PENDING_RESTART,
-                  BASSBOOST_LEVELS, TREBLEBOOST_LEVELS, VOCALBOOST_LEVELS):
+        for m in (
+            CURRENT_TRACK,
+            CURRENT_PLAYERS,
+            PENDING_RESTART,
+            BASSBOOST_LEVELS,
+            TREBLEBOOST_LEVELS,
+            VOCALBOOST_LEVELS,
+        ):
             m.pop(guild_id, None)
 
         # Delete the Now Playing message if it exists
@@ -693,15 +790,112 @@ async def reset_cmd(interaction: discord.Interaction):
         if acknowledged:
             await interaction.followup.send(final_msg, ephemeral=True, allowed_mentions=ALLOWED_NONE)
         else:
-            # If we couldn't ack earlier, try a normal response first…
             if not interaction.response.is_done():
                 await interaction.response.send_message(final_msg, ephemeral=True, allowed_mentions=ALLOWED_NONE)
             else:
-                # …or last resort: post to the channel (works even if the interaction token died)
                 await interaction.channel.send(final_msg, allowed_mentions=ALLOWED_NONE)
         print("[RESET] sent final confirmation")
     except Exception as e:
         print(f"[RESET] final confirm failed: {e}")
+
+
+@tree.command(name="controls", description="Test: send the control panel here")
+async def controls_cmd(interaction: discord.Interaction):
+    NOW_PLAYING_CHANNELS[interaction.guild_id] = interaction.channel.id
+    await interaction.response.send_message("Controls Panel", view=controls_view())
+
+
+# ---------- THEME COMMANDS (only ALLOWED_USERS can change) ----------
+
+def user_allowed(uid: int) -> bool:
+    return uid in ALLOWED_USERS
+
+
+@tree.command(name="theme_list", description="Show all available themes")
+async def theme_list_cmd(interaction: discord.Interaction):
+    themes = ["normal", "christmas", "dark", "neon", "pastel", "winter", "custom"]
+    await interaction.response.send_message(
+        "🎨 **Available Themes:**\n" + "\n".join(f"• `{t}`" for t in themes),
+        ephemeral=True,
+    )
+
+
+@tree.command(name="theme_set", description="Change the bot theme")
+@app_commands.describe(mode="normal, christmas, dark, neon, pastel, winter, custom")
+async def theme_set_cmd(interaction: discord.Interaction, mode: str):
+    if not user_allowed(interaction.user.id):
+        return await interaction.response.send_message(
+            "❌ You are not allowed to change themes.", ephemeral=True
+        )
+
+    mode = mode.lower().strip()
+    valid = ["normal", "christmas", "dark", "neon", "pastel", "winter", "custom"]
+    if mode not in valid:
+        return await interaction.response.send_message("❌ Invalid theme.", ephemeral=True)
+
+    data = load_theme_data()
+    data["mode"] = mode
+    save_theme_data(data)
+
+    # update presence for new theme
+    await refresh_presence()
+
+    await interaction.response.send_message(f"🎨 Theme changed to **{mode}**")
+
+    await send_or_edit_now_playing(
+        interaction.guild_id,
+        bot=bot,
+        now_playing_channels=NOW_PLAYING_CHANNELS,
+        now_playing_messages=NOW_PLAYING_MESSAGES,
+        current_players=CURRENT_PLAYERS,
+        current_track=CURRENT_TRACK,
+        queue_getter=get_queue,
+        bass_levels=BASSBOOST_LEVELS,
+        treble_levels=TREBLEBOOST_LEVELS,
+        vocal_levels=VOCALBOOST_LEVELS,
+        allowed_mentions=ALLOWED_NONE,
+        view=controls_view(),
+    )
+
+
+@tree.command(name="theme_custom", description="Set custom theme color using HEX")
+@app_commands.describe(hex_color="Example: #ff22aa")
+async def theme_custom_cmd(interaction: discord.Interaction, hex_color: str):
+    if not user_allowed(interaction.user.id):
+        return await interaction.response.send_message(
+            "❌ You are not allowed to change themes.", ephemeral=True
+        )
+
+    if not hex_color.startswith("#"):
+        return await interaction.response.send_message(
+            "❌ Must be a HEX color starting with # (e.g. `#ff22aa`).",
+            ephemeral=True,
+        )
+
+    data = load_theme_data()
+    data["mode"] = "custom"
+    data["custom_color"] = hex_color
+    save_theme_data(data)
+
+    # update presence for new theme
+    await refresh_presence()
+
+    await interaction.response.send_message(f"🎨 Custom theme color set to **{hex_color}**")
+
+    await send_or_edit_now_playing(
+        interaction.guild_id,
+        bot=bot,
+        now_playing_channels=NOW_PLAYING_CHANNELS,
+        now_playing_messages=NOW_PLAYING_MESSAGES,
+        current_players=CURRENT_PLAYERS,
+        current_track=CURRENT_TRACK,
+        queue_getter=get_queue,
+        bass_levels=BASSBOOST_LEVELS,
+        treble_levels=TREBLEBOOST_LEVELS,
+        vocal_levels=VOCALBOOST_LEVELS,
+        allowed_mentions=ALLOWED_NONE,
+        view=controls_view(),
+    )
 
 
 # ---------- Moving progress bar refresh ----------
@@ -730,31 +924,28 @@ async def _progress_tick():
         except Exception:
             pass
 
-@tree.command(name="controls", description="Test: send the control panel here")
-async def controls_cmd(interaction: discord.Interaction):
-    NOW_PLAYING_CHANNELS[interaction.guild_id] = interaction.channel.id
-    await interaction.response.send_message("Controls Panel", view=controls_view())
-
 
 # ---------- Lifecycle ----------
 @bot.event
 async def on_ready():
-    activity = discord.Activity(type=discord.ActivityType.listening, name="/play")
-    await bot.change_presence(status=discord.Status.online, activity=activity)
+    await refresh_presence()
     await tree.sync()
 
-    # ✅ Register the persistent PlayerControls view
-    bot.add_view(PlayerControls(
-        bot=bot,
-        now_playing_channels=NOW_PLAYING_CHANNELS,
-        now_playing_messages=NOW_PLAYING_MESSAGES,
-        current_players=CURRENT_PLAYERS,
-        current_track=CURRENT_TRACK,
-        queue_getter=get_queue,
-        bass_levels=BASSBOOST_LEVELS,
-        treble_levels=TREBLEBOOST_LEVELS,
-        vocal_levels=VOCALBOOST_LEVELS
-    ))
+    # Register the persistent PlayerControls view
+    bot.add_view(
+        PlayerControls(
+            bot=bot,
+            now_playing_channels=NOW_PLAYING_CHANNELS,
+            now_playing_messages=NOW_PLAYING_MESSAGES,
+            current_players=CURRENT_PLAYERS,
+            current_track=CURRENT_TRACK,
+            queue_getter=get_queue,
+            bass_levels=BASSBOOST_LEVELS,
+            treble_levels=TREBLEBOOST_LEVELS,
+            vocal_levels=VOCALBOOST_LEVELS,
+            allowed_mentions=ALLOWED_NONE,
+        )
+    )
 
     if not _progress_tick.is_running():
         _progress_tick.start()
